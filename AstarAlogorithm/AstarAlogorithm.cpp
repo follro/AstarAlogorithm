@@ -1,9 +1,9 @@
 ﻿// AstarAlogorithm.cpp : 애플리케이션에 대한 진입점을 정의합니다.
 //
 
+#include <array>
 #include "framework.h"
 #include "AstarAlogorithm.h"
-
 #define MAX_LOADSTRING 100
 
 // 전역 변수:
@@ -17,10 +17,25 @@ BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
 
-
 // >> :
-SIZE windowSize { 1800,1000 };
+#define MAX_X_POINT 36
+#define MAX_Y_POINT 18
+#define MOVE_POINT_SIZE 50
+#define BTN_SPACE_SIZE 100
+struct MovePoint
+{
+    int total;
+    int startCost;
+    int endCost;
+    RECT rect;
+};
 
+void DrawMap(HDC hdc);
+
+std::array<std::array<MovePoint, MAX_X_POINT>, MAX_Y_POINT> movePoint;
+
+SIZE windowSize { 1800,1000 };
+SIZE mapSize{ 1800, 1000 };
 // <<
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
@@ -104,7 +119,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    hInst = hInstance; // 인스턴스 핸들을 전역 변수에 저장합니다.
 
    HWND hWnd = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPEDWINDOW,
-      CW_USEDEFAULT, CW_USEDEFAULT, windowSize.cx, windowSize.cy, nullptr, nullptr, hInstance, nullptr);
+      CW_USEDEFAULT, CW_USEDEFAULT, windowSize.cx, windowSize.cy+75, nullptr, nullptr, hInstance, nullptr);
 
    if (!hWnd)
    {
@@ -131,6 +146,22 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message)
     {
+    case WM_CREATE:
+        
+        for (int i = 0; i < MAX_Y_POINT; i++)
+        {
+            for (int j = 0; j < MAX_X_POINT; j++)
+            {
+                int left = j * MOVE_POINT_SIZE;
+                int top = i * MOVE_POINT_SIZE + BTN_SPACE_SIZE;
+                movePoint[i][j].rect = { left, top, left + MOVE_POINT_SIZE, top + MOVE_POINT_SIZE };
+                movePoint[i][j].total = 0;
+                movePoint[i][j].endCost = 0;
+                movePoint[i][j].startCost = 0;
+            }
+        }
+
+        break;
     case WM_COMMAND:
         {
             int wmId = LOWORD(wParam);
@@ -153,6 +184,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hWnd, &ps);
             // TODO: 여기에 hdc를 사용하는 그리기 코드를 추가합니다...
+            DrawMap(hdc);
             EndPaint(hWnd, &ps);
         }
         break;
@@ -183,4 +215,23 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
         break;
     }
     return (INT_PTR)FALSE;
+}
+
+
+void DrawMap(HDC hdc)
+{
+    for (int i = 0; i < MAX_Y_POINT; i++)
+    {
+        for (int j = 0; j < MAX_X_POINT; j++)
+        {
+            Rectangle(hdc, movePoint[i][j].rect.left, movePoint[i][j].rect.top, movePoint[i][j].rect.right, movePoint[i][j].rect.bottom);
+            TCHAR buf[20]; 
+            wsprintf(buf, L"%d", movePoint[i][j].startCost); 
+            TextOut(hdc, movePoint[i][j].rect.left + 5, movePoint[i][j].rect.top + 5, buf, wcslen(buf));
+            wsprintf(buf, L"%d", movePoint[i][j].endCost);
+            TextOut(hdc, movePoint[i][j].rect.right - 15, movePoint[i][j].rect.top + 5, buf, wcslen(buf));
+            wsprintf(buf, L"%d", movePoint[i][j].total);
+            TextOut(hdc, movePoint[i][j].rect.left + 20, movePoint[i][j].rect.bottom - 20, buf, wcslen(buf));
+        }
+    }
 }
