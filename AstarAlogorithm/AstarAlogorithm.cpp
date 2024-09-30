@@ -2,6 +2,9 @@
 //
 
 #include <array>
+#include <list>
+#include <cmath>
+#include <algorithm>
 #include "framework.h"
 #include "AstarAlogorithm.h"
 #define MAX_LOADSTRING 100
@@ -18,24 +21,67 @@ LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
 
 // >> :
+#define IDC_Btn_Mode 10001
+#define IDC_Btn_Simulation 10002
+#define IDC_Btn_Clear 10003
+#define IDC_Btn_Start 10004
+#define IDC_Btn_Destination 10005
+#define IDC_Btn_Wall 10006
+
+
 #define MAX_X_POINT 36
 #define MAX_Y_POINT 18
 #define MOVE_POINT_SIZE 50
 #define BTN_SPACE_SIZE 100
+
+enum class MovePointState {DEFAULT ,WALL, START, DESTINATION, OPENLIST, CLOSELIST, PATH};
 struct MovePoint
 {
     int total;
     int startCost;
     int endCost;
     RECT rect;
+    MovePoint* parent;
+    MovePointState state;
 };
+
+std::array<std::array<MovePoint, MAX_X_POINT>, MAX_Y_POINT> movePoint;
+std::list<MovePoint*> openList;
+
+RECT windowSize{ 0,0,1800,1000 };
+SIZE mapSize{ 1800, 1000 };
+
+HWND BtnMode, BtnSimulation, BtnClear, BtnStart, BtnDestination, BtnWall;
+HDC hdc, hMemDC, tempDC;
+HBITMAP hBitmap, hOldBitmap;
+HBRUSH hBlackBrush, hGreenBrush, hRedBrush, hNullBrush,hOldBrush;
+PAINTSTRUCT ps;
+BOOL isCreateMode;
+
+POINT ptMouse;
+POINT ptStart, ptDestination, ptCurPos;
+
+TCHAR curMode[20];
+TCHAR mousePos[128];
+
+const int WeightDiagonal = 14;
+const int WeightUDLR = 10;
 
 void DrawMap(HDC hdc);
 
-std::array<std::array<MovePoint, MAX_X_POINT>, MAX_Y_POINT> movePoint;
+void CreateDoubbleBuffering(HWND hWnd);
 
-SIZE windowSize { 1800,1000 };
-SIZE mapSize{ 1800, 1000 };
+void EndDoubleBuffering(HWND hWnd);
+
+void MapClear();
+
+void CreateMap(MovePointState state);
+
+bool searchAround(int x, int y);
+
+int heuristic(int x, int y, POINT endP);
+
+MovePoint* getPath();
 // <<
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
@@ -64,12 +110,22 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     MSG msg;
 
     // 기본 메시지 루프입니다:
-    while (GetMessage(&msg, nullptr, 0, 0))
+    while (true)
     {
-        if (!TranslateAccelerator(msg.hwnd, hAccelTable, &msg))
+        if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
         {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
+            if (msg.message == WM_QUIT)
+            {
+                break;
+            }
+            else
+            {
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
+            }
+        }
+        {
+
         }
     }
 
@@ -119,7 +175,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    hInst = hInstance; // 인스턴스 핸들을 전역 변수에 저장합니다.
 
    HWND hWnd = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPEDWINDOW,
-      CW_USEDEFAULT, CW_USEDEFAULT, windowSize.cx, windowSize.cy+75, nullptr, nullptr, hInstance, nullptr);
+      CW_USEDEFAULT, CW_USEDEFAULT, windowSize.right+25, windowSize.bottom+75, nullptr, nullptr, hInstance, nullptr);
 
    if (!hWnd)
    {
@@ -144,23 +200,30 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 //
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    static MovePointState btnState;
     switch (message)
     {
     case WM_CREATE:
         
-        for (int i = 0; i < MAX_Y_POINT; i++)
-        {
-            for (int j = 0; j < MAX_X_POINT; j++)
-            {
-                int left = j * MOVE_POINT_SIZE;
-                int top = i * MOVE_POINT_SIZE + BTN_SPACE_SIZE;
-                movePoint[i][j].rect = { left, top, left + MOVE_POINT_SIZE, top + MOVE_POINT_SIZE };
-                movePoint[i][j].total = 0;
-                movePoint[i][j].endCost = 0;
-                movePoint[i][j].startCost = 0;
-            }
-        }
+        isCreateMode = false;
+        BtnMode = CreateWindow(_T("button"), _T("ModeChange"), WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 100, 25, 100, 60, hWnd, (HMENU)IDC_Btn_Mode, hInst, NULL);
+        BtnSimulation = CreateWindow(_T("button"), _T("Simulation"), WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 250, 25, 100, 60, hWnd, (HMENU)IDC_Btn_Simulation, hInst, NULL);
+        BtnClear = CreateWindow(_T("button"), _T("Clear"), WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 400, 25, 100, 60, hWnd, (HMENU)IDC_Btn_Clear, hInst, NULL);
 
+        BtnStart = CreateWindow(_T("button"), _T("Start"), WS_CHILD | BS_PUSHBUTTON, 800 , 25, 100, 60, hWnd, (HMENU)IDC_Btn_Start, hInst, NULL);
+        BtnDestination = CreateWindow(_T("button"), _T("Destination"), WS_CHILD | BS_PUSHBUTTON, 950, 25, 100, 60, hWnd, (HMENU)IDC_Btn_Destination, hInst, NULL);
+        BtnWall = CreateWindow(_T("button"), _T("Wall"), WS_CHILD | BS_PUSHBUTTON, 1100, 25, 100, 60, hWnd, (HMENU)IDC_Btn_Wall, hInst, NULL);
+
+        btnState = MovePointState::DEFAULT;
+        hBlackBrush = CreateSolidBrush(RGB(0,0,0));
+        hRedBrush = CreateSolidBrush(RGB(205, 10, 10));
+        hGreenBrush = CreateSolidBrush(RGB(10, 205, 10));
+        hNullBrush = (HBRUSH)GetStockObject(NULL_BRUSH);
+
+        ptStart = { -1, -1 };
+        ptDestination = { -1,-1 };
+
+        MapClear();
         break;
     case WM_COMMAND:
         {
@@ -174,10 +237,60 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             case IDM_EXIT:
                 DestroyWindow(hWnd);
                 break;
+            case IDC_Btn_Mode:
+                isCreateMode = !isCreateMode;
+                if (isCreateMode)
+                {
+                    ShowWindow(BtnStart, SW_SHOW);
+                    ShowWindow(BtnDestination, SW_SHOW);
+                    ShowWindow(BtnWall, SW_SHOW);
+                }
+                else
+                {
+                    ShowWindow(BtnStart, SW_HIDE);
+                    ShowWindow(BtnDestination, SW_HIDE);
+                    ShowWindow(BtnWall, SW_HIDE);
+                }
+                InvalidateRect(hWnd, NULL, TRUE);
+                break;
+            case IDC_Btn_Start:
+                btnState = MovePointState::START;
+                break;
+            case IDC_Btn_Destination:
+                btnState = MovePointState::DESTINATION;
+                break;
+            case IDC_Btn_Wall:
+                btnState = MovePointState::WALL;
+            case IDC_Btn_Simulation:
+                if (!isCreateMode && ptStart.x >= 0 && ptDestination.x >= 0) 
+                {
+                    while (searchAround(ptStart.x, ptStart.y) == false)
+                    {
+                        getPath();
+                    }
+                }
+                break;
+            case IDC_Btn_Clear:
+                MapClear();
+                break;
             default:
                 return DefWindowProc(hWnd, message, wParam, lParam);
             }
         }
+        break;
+    case WM_MOUSEMOVE:
+        ptMouse.x = LOWORD(lParam);
+        ptMouse.y = HIWORD(lParam);
+
+        InvalidateRect(hWnd, NULL, false);
+        break;
+    case WM_LBUTTONDOWN:
+        if (isCreateMode) 
+        {
+            CreateMap(btnState);
+            InvalidateRect(hWnd, NULL, true);
+        } 
+        
         break;
     case WM_PAINT:
         {
@@ -189,6 +302,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         break;
     case WM_DESTROY:
+        DeleteObject(hRedBrush);
+        DeleteObject(hBlackBrush);
+        DeleteObject(hGreenBrush);
+        DeleteObject(hNullBrush);
         PostQuitMessage(0);
         break;
     default:
@@ -220,18 +337,230 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 
 void DrawMap(HDC hdc)
 {
+    if (isCreateMode) _tcscpy_s(curMode, _countof(curMode), _T("Mode: Create"));
+    else _tcscpy_s(curMode, _countof(curMode), _T("Mode: Simulation"));
+    TextOut(hdc, 10, 10, curMode, _tcslen(curMode));
+  
     for (int i = 0; i < MAX_Y_POINT; i++)
     {
         for (int j = 0; j < MAX_X_POINT; j++)
         {
+            switch (movePoint[i][j].state)
+            {
+            case MovePointState::WALL:
+                hOldBrush = (HBRUSH)SelectObject(hdc, hBlackBrush);
+                break;
+            case MovePointState::START:
+                hOldBrush = (HBRUSH)SelectObject(hdc, hGreenBrush);
+                break;
+            case MovePointState::DESTINATION:
+                hOldBrush = (HBRUSH)SelectObject(hdc, hRedBrush);
+                break;
+            default:
+                hOldBrush = (HBRUSH)SelectObject(hdc, hNullBrush);
+                break;
+            }
             Rectangle(hdc, movePoint[i][j].rect.left, movePoint[i][j].rect.top, movePoint[i][j].rect.right, movePoint[i][j].rect.bottom);
+            SelectObject(hdc, hOldBrush);
+            if (movePoint[i][j].state == MovePointState::WALL) continue;
+            else if (movePoint[i][j].state == MovePointState::DESTINATION) continue;
             TCHAR buf[20]; 
+            RECT textBox = { movePoint[i][j].rect.left + 5,movePoint[i][j].rect.top + 5, movePoint[i][j].rect.right - 5, movePoint[i][j].rect.bottom+10};
             wsprintf(buf, L"%d", movePoint[i][j].startCost); 
-            TextOut(hdc, movePoint[i][j].rect.left + 5, movePoint[i][j].rect.top + 5, buf, wcslen(buf));
+            DrawText(hdc, buf, wcslen(buf), &textBox, DT_SINGLELINE | DT_LEFT);
             wsprintf(buf, L"%d", movePoint[i][j].endCost);
-            TextOut(hdc, movePoint[i][j].rect.right - 15, movePoint[i][j].rect.top + 5, buf, wcslen(buf));
+            DrawText(hdc, buf, wcslen(buf), &textBox, DT_SINGLELINE | DT_RIGHT);
             wsprintf(buf, L"%d", movePoint[i][j].total);
-            TextOut(hdc, movePoint[i][j].rect.left + 20, movePoint[i][j].rect.bottom - 20, buf, wcslen(buf));
+            DrawText(hdc, buf, wcslen(buf), &textBox, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
         }
     }
+
+
+    wsprintf(mousePos, TEXT("Mouse Position : (%04d, %04d_)"), ptMouse.x, ptMouse.y);
+    TextOut(hdc, 1550, 10, mousePos, lstrlen(mousePos));
+}
+
+
+void CreateDoubbleBuffering(HWND hWnd)
+{
+    hdc = BeginPaint(hWnd, &ps);
+
+    GetClientRect(hWnd, &windowSize);
+    hMemDC = CreateCompatibleDC(hdc);
+    hBitmap = CreateCompatibleBitmap(hdc, windowSize.right, windowSize.bottom);
+    hOldBitmap = (HBITMAP)SelectObject(hMemDC, hBitmap);
+    PatBlt(hMemDC, 0, 0, windowSize.right, windowSize.bottom, WHITENESS);
+    tempDC = hdc;
+    hdc = hMemDC;
+    hMemDC = tempDC;
+}
+
+void EndDoubleBuffering(HWND hWnd)
+{
+    tempDC = hdc;
+    hdc = hMemDC;
+    hMemDC = tempDC;
+    GetClientRect(hWnd, &windowSize);
+    BitBlt(hdc, 0, 0, windowSize.right, windowSize.bottom, hMemDC, 0, 0, SRCCOPY);
+    SelectObject(hMemDC, hOldBitmap);
+    DeleteObject(hBitmap);
+    DeleteDC(hMemDC);
+    EndPaint(hWnd, &ps);
+}
+
+void MapClear()
+{
+    for (int i = 0; i < MAX_Y_POINT; i++)
+    {
+        for (int j = 0; j < MAX_X_POINT; j++)
+        {
+            int left = j * MOVE_POINT_SIZE;
+            int top = i * MOVE_POINT_SIZE + BTN_SPACE_SIZE;
+            movePoint[i][j].rect = { left, top, left + MOVE_POINT_SIZE, top + MOVE_POINT_SIZE };
+            movePoint[i][j].total = 0;
+            movePoint[i][j].endCost = 0;
+            movePoint[i][j].startCost = 0;
+            movePoint[i][j].state = MovePointState::DEFAULT;
+        }
+    }
+}
+
+void CreateMap(MovePointState state)
+{
+    int x = ptMouse.x / MOVE_POINT_SIZE;
+    int y = (ptMouse.y - BTN_SPACE_SIZE) / MOVE_POINT_SIZE ;
+
+     switch (state)
+     {
+     case MovePointState::START:
+         if (ptStart.x != -1)
+         {
+             movePoint[ptStart.y][ptStart.x].state = MovePointState::DEFAULT;
+         }
+         ptStart = { x, y };
+         ptCurPos = ptStart;
+        break;
+     case MovePointState::DESTINATION:
+         if (ptDestination.x != -1)
+         {
+             movePoint[ptDestination.y][ptDestination.x].state = MovePointState::DEFAULT;
+         }
+         ptDestination = { x, y };
+        break;
+     }
+
+    movePoint[y][x].total = 0;
+    movePoint[y][x].startCost = 0;
+    movePoint[y][x].endCost = 0;
+    movePoint[y][x].state = state;
+    movePoint[y][x].parent = nullptr;
+}
+
+bool searchAround(int x, int y)
+{
+    for (int i = -1; i < 2; i++)
+    {
+        if (y + i < 0 || y+i > MAX_Y_POINT) continue;
+        for (int j = -1; j < 2; j++)
+        {
+            if (i == 0 && j == 0) continue;
+            if (x + j < 0 || x + j > MAX_X_POINT) continue;
+
+            if (ptDestination.x == x && ptDestination.y == y)  return true;
+            if (movePoint[y + i][x + j].state == MovePointState::WALL || movePoint[y + i][x + j].state == MovePointState::CLOSELIST)  continue;
+            if (movePoint[y + i][x + j].state == MovePointState::START) continue;
+
+            if (movePoint[y + i][x + j].state == MovePointState::DEFAULT)
+            {
+                movePoint[y + i][x + j].state = MovePointState::OPENLIST;
+                movePoint[y + i][x + j].parent = &movePoint[y][x];
+                //g(n)
+                if (i == 0 || j == 0) movePoint[y + i][x + j].startCost = WeightUDLR;
+                else movePoint[y + i][x + j].startCost = WeightDiagonal;
+
+                //h(n)
+                movePoint[y + i][x + j].endCost = heuristic(x + j, y + i, ptDestination);
+                movePoint[y + i][x + j].parent = &movePoint[y][x];
+                movePoint[y + i][x + j].total = movePoint[y + i][x + j].endCost + movePoint[y + i][x + j].startCost;
+                openList.push_back(&movePoint[y + i][x + j]);
+            }
+            else
+            {
+                for (std::list<MovePoint*>::iterator it = openList.begin(); it != openList.end(); it++)
+                {
+                    if (&movePoint[y + i][x + j] == (*it))
+                    {
+                        int gn;
+                        if (i == 0 || j == 0)  gn = movePoint[y][x].startCost + WeightUDLR;
+                        else gn = movePoint[y][x].startCost + WeightDiagonal;
+
+                        if ((*it)->startCost > gn)
+                        {
+                            (*it)->startCost = gn;
+                            (*it)->parent = &movePoint[y][x];
+                            (*it)->total = (*it)->startCost + (*it)->endCost;
+                        }
+                        
+                        break;
+                    }
+                }
+            }
+
+        }
+    }
+    return false;
+}
+
+int heuristic(int x, int y, POINT endPoint)
+{
+    int diagonalNum = 0;
+
+    while (x != endPoint.x && y != endPoint.y)
+    {
+        x += endPoint.x - x;
+        y += endPoint.y - y;
+    }
+
+    if (x == endPoint.x) return abs(endPoint.y - y) * WeightUDLR + diagonalNum;
+    if (y == endPoint.y) return abs(endPoint.x - x) * WeightUDLR + diagonalNum;
+}
+
+
+MovePoint* getPath()
+{
+    MovePoint* minValuePoint = *openList.begin();
+
+    /*for (int i = -1; i < 2; i++)
+    {
+        if (ptCurPos.y + i < 0) continue;
+        for (int j = -1; j < 2; j++)
+        {
+            if (ptCurPos.x + j < 0) continue;
+           
+            MovePoint curPoint = movePoint[ptCurPos.y + i][ptCurPos.x + j];
+            if (curPoint.state == MovePointState::WALL) continue;
+            if (curPoint.state == MovePointState::CLOSELIST) continue;
+            if (curPoint.state == MovePointState::START) continue;
+
+            if (minValue > curPoint.total)
+            {
+                minValuePoint = &curPoint;
+                minValue = curPoint.total;
+            }
+        }
+    }*/
+
+    for (std::list<MovePoint*>::iterator it = openList.begin(); it != openList.end(); it++)
+    {
+        if (minValuePoint->total > (*it)->total)
+        {
+            minValuePoint = (*it);
+        }
+    }
+    
+    //여기 수정필요
+    int x = ptMouse.x / MOVE_POINT_SIZE;
+    int y = (ptMouse.y - BTN_SPACE_SIZE) / MOVE_POINT_SIZE;
+    ptCurPos.x = minValuePoint->rect.left / MOVE_POINT_SIZE;
+    ptCurPos.y = minValuePoint->rect.top / MOVE_POINT_SIZE;
 }
