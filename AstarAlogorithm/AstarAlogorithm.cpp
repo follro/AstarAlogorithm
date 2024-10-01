@@ -29,9 +29,9 @@ INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
 #define IDC_Btn_Wall 10006
 
 
-#define MAX_X_POINT 36
-#define MAX_Y_POINT 18
-#define MOVE_POINT_SIZE 50
+#define MAX_X_POINT 18
+#define MAX_Y_POINT 9
+#define MOVE_POINT_SIZE 100
 #define BTN_SPACE_SIZE 100
 
 enum class MovePointState {DEFAULT ,WALL, START, DESTINATION, OPENLIST, CLOSELIST, PATH};
@@ -54,15 +54,17 @@ SIZE mapSize{ 1800, 1000 };
 HWND BtnMode, BtnSimulation, BtnClear, BtnStart, BtnDestination, BtnWall;
 HDC hdc, hMemDC, tempDC;
 HBITMAP hBitmap, hOldBitmap;
-HBRUSH hBlackBrush, hGreenBrush, hRedBrush, hNullBrush,hOldBrush;
+HBRUSH hBlackBrush, hGreenBrush, hRedBrush, hNullBrush, hYellowBrush, hBlueBrush, hPinkBrush,hOldBrush;
 PAINTSTRUCT ps;
 BOOL isCreateMode;
 
 POINT ptMouse;
-POINT ptStart, ptDestination, ptCurPos;
+POINT ptStart, ptDestination;
 
 TCHAR curMode[20];
 TCHAR mousePos[128];
+
+MovePoint* curPath;
 
 const int WeightDiagonal = 14;
 const int WeightUDLR = 10;
@@ -77,8 +79,8 @@ void MapClear();
 
 void CreateMap(MovePointState state);
 
-bool searchAround(int x, int y);
-
+//bool searchAround(int x, int y);
+bool searchAround(MovePoint& selectPoint);
 int heuristic(int x, int y, POINT endP);
 
 MovePoint* getPath();
@@ -218,6 +220,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         hBlackBrush = CreateSolidBrush(RGB(0,0,0));
         hRedBrush = CreateSolidBrush(RGB(205, 10, 10));
         hGreenBrush = CreateSolidBrush(RGB(10, 205, 10));
+        hBlueBrush = CreateSolidBrush(RGB(10, 10, 205));
+        hYellowBrush = CreateSolidBrush(RGB(255, 212, 0));
+        hPinkBrush = CreateSolidBrush(RGB(255, 122, 203));
         hNullBrush = (HBRUSH)GetStockObject(NULL_BRUSH);
 
         ptStart = { -1, -1 };
@@ -264,14 +269,26 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             case IDC_Btn_Simulation:
                 if (!isCreateMode && ptStart.x >= 0 && ptDestination.x >= 0) 
                 {
-                    while (searchAround(ptStart.x, ptStart.y) == false)
+                    /*searchAround(*curPath);
+                    InvalidateRect(hWnd, NULL, TRUE);*/
+                    while (searchAround(*curPath) == false)
                     {
-                        getPath();
+                        curPath = getPath();
                     }
+
+                    MovePoint* p = movePoint[ptDestination.y][ptDestination.x].parent;
+                    while (p != &movePoint[ptStart.y][ptStart.x])
+                    {
+                        p->state = MovePointState::PATH;
+                        p = p->parent;
+                    }
+                        InvalidateRect(hWnd, NULL, TRUE);
+
                 }
                 break;
             case IDC_Btn_Clear:
                 MapClear();
+                InvalidateRect(hWnd, NULL, TRUE);
                 break;
             default:
                 return DefWindowProc(hWnd, message, wParam, lParam);
@@ -306,6 +323,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         DeleteObject(hBlackBrush);
         DeleteObject(hGreenBrush);
         DeleteObject(hNullBrush);
+        DeleteObject(hBlueBrush);
+        DeleteObject(hYellowBrush);
+        DeleteObject(hPinkBrush);
         PostQuitMessage(0);
         break;
     default:
@@ -355,6 +375,15 @@ void DrawMap(HDC hdc)
                 break;
             case MovePointState::DESTINATION:
                 hOldBrush = (HBRUSH)SelectObject(hdc, hRedBrush);
+                break;
+            case MovePointState::CLOSELIST:
+                hOldBrush = (HBRUSH)SelectObject(hdc, hYellowBrush);
+                break;
+            case MovePointState::OPENLIST:
+                hOldBrush = (HBRUSH)SelectObject(hdc, hYellowBrush);
+                break;
+            case MovePointState::PATH:
+                hOldBrush = (HBRUSH)SelectObject(hdc, hPinkBrush);
                 break;
             default:
                 hOldBrush = (HBRUSH)SelectObject(hdc, hNullBrush);
@@ -410,6 +439,7 @@ void EndDoubleBuffering(HWND hWnd)
 
 void MapClear()
 {
+    openList.clear();
     for (int i = 0; i < MAX_Y_POINT; i++)
     {
         for (int j = 0; j < MAX_X_POINT; j++)
@@ -438,7 +468,7 @@ void CreateMap(MovePointState state)
              movePoint[ptStart.y][ptStart.x].state = MovePointState::DEFAULT;
          }
          ptStart = { x, y };
-         ptCurPos = ptStart;
+         curPath = &movePoint[ptStart.y][ptStart.x];
         break;
      case MovePointState::DESTINATION:
          if (ptDestination.x != -1)
@@ -456,58 +486,68 @@ void CreateMap(MovePointState state)
     movePoint[y][x].parent = nullptr;
 }
 
-bool searchAround(int x, int y)
+
+bool searchAround(MovePoint& selectPoint)
 {
+    int x = selectPoint.rect.left / MOVE_POINT_SIZE;
+    int y = (selectPoint.rect.top - BTN_SPACE_SIZE) / MOVE_POINT_SIZE;
+
+    
+
     for (int i = -1; i < 2; i++)
     {
-        if (y + i < 0 || y+i > MAX_Y_POINT) continue;
+        if (y + i < 0 || y + i >= MAX_Y_POINT) continue;
         for (int j = -1; j < 2; j++)
         {
+            if (x + j < 0 || x + j >= MAX_X_POINT) continue;
             if (i == 0 && j == 0) continue;
-            if (x + j < 0 || x + j > MAX_X_POINT) continue;
 
-            if (ptDestination.x == x && ptDestination.y == y)  return true;
-            if (movePoint[y + i][x + j].state == MovePointState::WALL || movePoint[y + i][x + j].state == MovePointState::CLOSELIST)  continue;
-            if (movePoint[y + i][x + j].state == MovePointState::START) continue;
+            MovePoint& curPoint = movePoint[y + i][x + j];
 
-            if (movePoint[y + i][x + j].state == MovePointState::DEFAULT)
+            if (curPoint.state == MovePointState::WALL || curPoint.state == MovePointState::CLOSELIST) continue;
+            if (curPoint.state == MovePointState::START) continue;
+            if (curPoint.state == MovePointState::DESTINATION)
             {
-                movePoint[y + i][x + j].state = MovePointState::OPENLIST;
-                movePoint[y + i][x + j].parent = &movePoint[y][x];
-                //g(n)
-                if (i == 0 || j == 0) movePoint[y + i][x + j].startCost = WeightUDLR;
-                else movePoint[y + i][x + j].startCost = WeightDiagonal;
-
-                //h(n)
-                movePoint[y + i][x + j].endCost = heuristic(x + j, y + i, ptDestination);
-                movePoint[y + i][x + j].parent = &movePoint[y][x];
-                movePoint[y + i][x + j].total = movePoint[y + i][x + j].endCost + movePoint[y + i][x + j].startCost;
-                openList.push_back(&movePoint[y + i][x + j]);
+                curPoint.parent = &selectPoint;
+                return true;
             }
-            else
-            {
-                for (std::list<MovePoint*>::iterator it = openList.begin(); it != openList.end(); it++)
-                {
-                    if (&movePoint[y + i][x + j] == (*it))
-                    {
-                        int gn;
-                        if (i == 0 || j == 0)  gn = movePoint[y][x].startCost + WeightUDLR;
-                        else gn = movePoint[y][x].startCost + WeightDiagonal;
 
-                        if ((*it)->startCost > gn)
-                        {
-                            (*it)->startCost = gn;
-                            (*it)->parent = &movePoint[y][x];
-                            (*it)->total = (*it)->startCost + (*it)->endCost;
-                        }
-                        
-                        break;
+            if (curPoint.state == MovePointState::DEFAULT)
+            {
+                if (i == 0 || j == 0)    curPoint.startCost = selectPoint.startCost + WeightUDLR;
+                else                     curPoint.startCost = selectPoint.startCost + WeightDiagonal;
+
+                curPoint.endCost = heuristic(x+j, y+i, ptDestination);
+                curPoint.state = MovePointState::OPENLIST;
+                curPoint.parent = &selectPoint;
+                curPoint.total = curPoint.endCost + curPoint.startCost;
+                openList.push_back(&curPoint);
+            }
+            else if (curPoint.state == MovePointState::OPENLIST)
+            {
+                if (i == 0 || j == 0)
+                {
+                    if (curPoint.startCost > selectPoint.startCost + WeightUDLR)
+                    {
+                        curPoint.startCost = selectPoint.startCost + WeightUDLR;
+                        curPoint.parent = &selectPoint;
+                        curPoint.total = curPoint.endCost + curPoint.startCost;
+                    }
+                }
+                else
+                {
+                    if (curPoint.startCost > selectPoint.startCost + WeightDiagonal)
+                    {
+                        curPoint.startCost = selectPoint.startCost + WeightDiagonal;
+                        curPoint.parent = &selectPoint;
+                        curPoint.total = curPoint.endCost + curPoint.startCost;
                     }
                 }
             }
-
         }
     }
+
+
     return false;
 }
 
@@ -517,50 +557,33 @@ int heuristic(int x, int y, POINT endPoint)
 
     while (x != endPoint.x && y != endPoint.y)
     {
-        x += endPoint.x - x;
-        y += endPoint.y - y;
+        diagonalNum++;
+        x += (endPoint.x - x) / abs(endPoint.x - x);
+        y += (endPoint.y - y) / abs(endPoint.y - y);
     }
 
-    if (x == endPoint.x) return abs(endPoint.y - y) * WeightUDLR + diagonalNum;
-    if (y == endPoint.y) return abs(endPoint.x - x) * WeightUDLR + diagonalNum;
+    if (x == endPoint.x) return (abs(endPoint.y - y ) * WeightUDLR + diagonalNum * WeightDiagonal);
+    if (y == endPoint.y) return (abs(endPoint.x - x ) * WeightUDLR + diagonalNum * WeightDiagonal);
 }
 
 
 MovePoint* getPath()
 {
-    MovePoint* minValuePoint = *openList.begin();
-
-    /*for (int i = -1; i < 2; i++)
-    {
-        if (ptCurPos.y + i < 0) continue;
-        for (int j = -1; j < 2; j++)
-        {
-            if (ptCurPos.x + j < 0) continue;
-           
-            MovePoint curPoint = movePoint[ptCurPos.y + i][ptCurPos.x + j];
-            if (curPoint.state == MovePointState::WALL) continue;
-            if (curPoint.state == MovePointState::CLOSELIST) continue;
-            if (curPoint.state == MovePointState::START) continue;
-
-            if (minValue > curPoint.total)
-            {
-                minValuePoint = &curPoint;
-                minValue = curPoint.total;
-            }
-        }
-    }*/
+    MovePoint* minPoint;
+    std::list<MovePoint*>::iterator minValueIter = openList.begin();
 
     for (std::list<MovePoint*>::iterator it = openList.begin(); it != openList.end(); it++)
     {
-        if (minValuePoint->total > (*it)->total)
+        if ((*minValueIter)->total > (*it)->total)
         {
-            minValuePoint = (*it);
+            minValueIter = it;
         }
     }
-    
-    //여기 수정필요
-    int x = ptMouse.x / MOVE_POINT_SIZE;
-    int y = (ptMouse.y - BTN_SPACE_SIZE) / MOVE_POINT_SIZE;
-    ptCurPos.x = minValuePoint->rect.left / MOVE_POINT_SIZE;
-    ptCurPos.y = minValuePoint->rect.top / MOVE_POINT_SIZE;
+
+     minPoint = *minValueIter;
+     if(minPoint->state != MovePointState::START)
+        minPoint->state = MovePointState::CLOSELIST;
+    minValueIter = openList.erase(minValueIter);
+
+    return minPoint;
 }
